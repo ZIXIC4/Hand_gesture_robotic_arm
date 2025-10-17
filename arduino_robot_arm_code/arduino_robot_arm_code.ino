@@ -1,4 +1,6 @@
-#include "HCPCA9685.h"
+#include <HCPCA9685.h>
+
+
 #include <SoftwareSerial.h>
 
 #define I2CAdd 0x40
@@ -9,11 +11,11 @@ HCPCA9685 HCPCA9685(I2CAdd);
 SoftwareSerial Bluetooth(BT_RX, BT_TX);  // RX, TX
 
 // Initial parking positions
-const int servo_joint_L_parking_pos = 60;
-const int servo_joint_R_parking_pos = 60;
-const int servo_joint_1_parking_pos = 70;
-const int servo_joint_2_parking_pos = 47;
-const int servo_joint_3_parking_pos = 63;
+const int servo_joint_L_parking_pos = 10;
+const int servo_joint_R_parking_pos = 10;
+const int servo_joint_1_parking_pos = 400;
+const int servo_joint_2_parking_pos = 297;
+const int servo_joint_3_parking_pos = 123;
 const int servo_joint_4_parking_pos = 63;
 
 // Step increments
@@ -22,7 +24,7 @@ int servo_joint_R_pos_increment = 20;
 int servo_joint_1_pos_increment = 20;
 int servo_joint_2_pos_increment = 50;
 int servo_joint_3_pos_increment = 60;
-int servo_joint_4_pos_increment = 40;
+int servo_joint_4_pos_increment = 20;
 
 // Position trackers
 int servo_joint_L_parking_pos_i = servo_joint_L_parking_pos;
@@ -44,7 +46,19 @@ int servo_joint_2_max_pos = 380;
 int servo_joint_3_min_pos = 10;
 int servo_joint_3_max_pos = 380;
 int servo_joint_4_min_pos = 10;
-int servo_joint_4_max_pos = 120;
+int servo_joint_4_max_pos = 200;
+
+// === Elbow mapping constants (tune these) ===
+const int ELBOW_MIN = 10;    // same as servo_joint_L_min_pos
+const int ELBOW_MAX = 180;   // same as servo_joint_L_max_pos
+const int ELBOW_STEP = 20;
+
+// Mechanical trims (if one horn is off a bit)
+const int L_TRIM = -10;  // was your "-10"
+const int R_TRIM = 0;
+
+// Canonical elbow angle (replaces servo_joint_L_parking_pos_i as the source of truth)
+int elbow = servo_joint_L_parking_pos;
 
 char state = 0;
 int response_time = 5;
@@ -57,8 +71,8 @@ int action_delay = 600;
 const int dirPin = 4;
 const int stepPin = 5;
 const int Enable = 9;
-const int stepsPerRevolution = 300;
-int stepDelay = 1300;
+const int stepsPerRevolution = 40;
+int stepDelay = 3000;
 const int stepsPerRevolutionSmall = 60;
 int stepDelaySmall = 9500;
 
@@ -170,28 +184,39 @@ void wristServo1Backward() {
   }
 }
 
+
+
+// Clamp helper
+int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// Apply mapping to both servos (ALWAYS the same equations)
+void applyElbow() {
+  // Left servo (channel 0) mirrors the elbow value with trim
+  int left  = clampi((ELBOW_MAX - elbow) + L_TRIM, servo_joint_L_min_pos, servo_joint_L_max_pos);
+
+  // Right servo (channel 1) follows the elbow value with trim
+  int right = clampi(elbow + R_TRIM,           servo_joint_R_min_pos, servo_joint_R_max_pos);
+
+  HCPCA9685.Servo(0, left);
+  HCPCA9685.Servo(1, right);
+  Serial.print("Elbow-> L:"); Serial.print(left);
+  Serial.print(" R:");        Serial.print(right);
+  Serial.print("  e:");       Serial.println(elbow);
+}
+
+// Move elbow down (increase canonical value) then apply once
 void elbowServoForward() {
-  if (servo_joint_L_parking_pos_i < servo_joint_L_max_pos) {
-    servo_joint_L_parking_pos_i += servo_joint_L_pos_increment;
-    HCPCA9685.Servo(0, (servo_joint_L_max_pos - servo_joint_L_parking_pos_i) - 10);
-    HCPCA9685.Servo(1, servo_joint_L_parking_pos_i);
-    delay(response_time);
-    Serial.print("Elbow Down -> ");
-    Serial.println(servo_joint_L_parking_pos_i);
-  }
+  elbow = clampi(elbow + ELBOW_STEP, ELBOW_MIN, ELBOW_MAX);
+  applyElbow();
+  delay(response_time);
 }
 
+// Move elbow up (decrease canonical value) then apply once
 void elbowServoBackward() {
-  if (servo_joint_L_parking_pos_i > servo_joint_L_min_pos) {
-    servo_joint_L_parking_pos_i -= servo_joint_L_pos_increment;
-    HCPCA9685.Servo(0, servo_joint_L_parking_pos_i - 10);
-    HCPCA9685.Servo(1, (servo_joint_L_max_pos - servo_joint_L_parking_pos_i));
-    delay(response_time);
-    Serial.print("Elbow Up -> ");
-    Serial.println(servo_joint_L_parking_pos_i);
-  }
+  elbow = clampi(elbow - ELBOW_STEP, ELBOW_MIN, ELBOW_MAX);
+  applyElbow();
+  delay(response_time);
 }
-
 void shoulderServoForward() {
   if (servo_joint_1_parking_pos_i < servo_joint_1_max_pos) {
     servo_joint_1_parking_pos_i += servo_joint_1_pos_increment;
@@ -241,31 +266,24 @@ void baseRotateRight() {
 }
 
 void wakeUp() {
-  if (loop_check == 0) {
-    for (Pos = 0; Pos < 10; Pos++) {
-      HCPCA9685.Servo(1, Pos);
-      delay(response_time_fast);
-    }
-    for (Pos = 400; Pos > 390; Pos--) {
-      HCPCA9685.Servo(2, Pos);
-      delay(response_time_fast);
-    }
-    for (Pos = 10; Pos < 20; Pos++) {
-      HCPCA9685.Servo(3, Pos);
-      delay(response_time);
-    }
-    for (Pos = 380; Pos > 50; Pos--) {
-      HCPCA9685.Servo(4, Pos);
-      delay(response_time);
-    }
-    for (Pos = 50; Pos < 150; Pos++) {
-      HCPCA9685.Servo(4, Pos);
-      delay(response_time);
-    }
-    for (Pos = 19; Pos < 100; Pos++) {
-      HCPCA9685.Servo(3, Pos);
-      delay(response_time);
-    }
-    loop_check = 0;
-  }
+  Serial.println("Moving to default positions...");
+
+  // Use the existing parking position constants directly
+  HCPCA9685.Servo(0, servo_joint_L_parking_pos);
+  HCPCA9685.Servo(1, servo_joint_R_parking_pos);
+  HCPCA9685.Servo(2, servo_joint_1_parking_pos);
+  HCPCA9685.Servo(3, servo_joint_2_parking_pos);
+  HCPCA9685.Servo(4, servo_joint_3_parking_pos);
+  HCPCA9685.Servo(5, servo_joint_4_parking_pos);
+
+  // Reset the “_i” tracking variables to match
+  servo_joint_L_parking_pos_i = servo_joint_L_parking_pos;
+  servo_joint_R_parking_pos_i = servo_joint_R_parking_pos;
+  servo_joint_1_parking_pos_i = servo_joint_1_parking_pos;
+  servo_joint_2_parking_pos_i = servo_joint_2_parking_pos;
+  servo_joint_3_parking_pos_i = servo_joint_3_parking_pos;
+  servo_joint_4_parking_pos_i = servo_joint_4_parking_pos;
+
+  Serial.println("Wake-up complete — servos at parking positions.");
 }
+

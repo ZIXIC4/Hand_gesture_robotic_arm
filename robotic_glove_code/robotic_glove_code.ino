@@ -1,24 +1,34 @@
-#include<Wire.h>
+#include <Wire.h>
 #include <SoftwareSerial.h>
 
 SoftwareSerial BT(11, 10); // nano's RX, TX
 
-
-//Create thumb Sensors
-int pinkie = 0; //Pinkie thumb
-int finger = 0; //finger thumb
-int thumb = 0; //Index thumb
+// Create thumb Sensors
+int pinkie = 0; // Pinkie thumb
+int finger = 0; // finger thumb
+int thumb  = 0; // Index thumb
 
 int pinkie_Data = A1;
 int finger_Data = A2;
-int thumb_Data = A3;
+int thumb_Data  = A3;
 
 // MPU1 -> Palm movement； MPU2 -> Upper arm movement
-//const int MPU_addr = 0x68;
 const int MPU2 = 0x69, MPU1 = 0x68;
 const int SMOOTH_WINDOW = 10;  // average of last 10 samples
 
-//Ac -> Line acceleartion; Gy -> Angular velocity 
+// === Flex sensor smoothing ===
+const int FLEX_WINDOW = 10;
+
+int  thumbBuf[FLEX_WINDOW]  = {0};
+int  fingerBuf[FLEX_WINDOW] = {0};
+int  pinkieBuf[FLEX_WINDOW] = {0};
+
+long thumbSum  = 0;
+long fingerSum = 0;
+long pinkieSum = 0;
+
+int  thumbIdx  = 0,  fingerIdx  = 0,  pinkieIdx  = 0;
+bool thumbFull = false, fingerFull = false, pinkieFull = false;
 
 // Buffers for MPU1 for calculating average
 int16_t AcXBuffer1[SMOOTH_WINDOW];
@@ -44,68 +54,71 @@ bool bufferFilled2 = false;
 float gain = 20.0; 
 
 // Need to be calibrated 
+double x, y, z;
+double x2, y2, z2;
 
-double x;
-double y;
-double z;
-
-//Second MPU6050
-
-double x2;
-double y2;
-double z2;
-
-/*Autotune flex parameter
-  For Debug Mode. Check the upper and lowe limit of the flex sensors
+/* Autotune flex parameter
+  For Debug Mode. Check the upper and lower limit of the flex sensors
   3 Flex sensors used. Thumb, Middle, Pinkie
 */
-int thumb_high = 960;
-int thumb_low = 870;
-int finger_high = 920;
-int finger_low = 837;
-int pinkie_high = 950;
-int pinkie_low = 890;
+int thumb_high  = 885;
+int thumb_low   = 825;
+int finger_high = 900;
+int finger_low  = 820;
+int pinkie_high = 920;
+int pinkie_low  = 880;
 
-//Stop Caliberating the Flex Sensor when complete
+// Stop Calibrating the Flex Sensor when complete
 bool bool_caliberate = true;
 
-//How often to send values to the Robotic Arm
-int response_time = 100;
+// How often to send values to the Robotic Arm
+int response_time = 500;
+
+// --------- Prototypes ----------
+void GetMpuValue(
+  const int MPU,
+  float &AcX, float &AcY, float &AcZ,
+  float &GyX, float &GyY, float &GyZ,
+  int16_t *bufX, int16_t *bufY, int16_t *bufZ,
+  int16_t *gBufX, int16_t *gBufY, int16_t *gBufZ,
+  int &idx, bool &filled
+);
+
+int updateMovingAverage(int newVal,
+                        int *buf, long &sum,
+                        int &idx, bool &filled,
+                        const int WIN);
+// -------------------------------
 
 void setup() {
-  
   pinMode(3, OUTPUT);
   Wire.begin();
+
+  // Wake MPU1
   Wire.beginTransmission(MPU1);
-  Wire.write(0x6B);// PWR_MGMT_1 register
-  Wire.write(0); // set to zero (wakes up the MPU-6050)
-  Wire.endTransmission(true); Wire.begin();
-  Wire.beginTransmission(MPU2);
-  Wire.write(0x6B);// PWR_MGMT_1 register
-  Wire.write(0); // set to zero (wakes up the MPU-6050)
+  Wire.write(0x6B);           // PWR_MGMT_1 register
+  Wire.write(0);              // set to zero (wake up)
   Wire.endTransmission(true);
-  Serial.begin(9600);
-  BT.begin(9600);    
+
+  // Wake MPU2
+  Wire.beginTransmission(MPU2);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+
+  Serial.begin(4800);
+  BT.begin(4800);    
   delay(1000);
-
 }
-void loop() {
 
+void loop() {
   float AcX1, AcY1, AcZ1;
   float GyX1, GyY1, GyZ1;
 
   float AcX2, AcY2, AcZ2;
   float GyX2, GyY2, GyZ2;
 
-  /*
-    Note: Serial.print() would send all values the robotic arm using via bluetooth.
-  */
-
-
-  digitalWrite(3, HIGH); //Use basic LED as visual indicator if value being sent
-
-  // debug_flex(); //Debug Mode on/off
-  // Serial.println("test");
+  digitalWrite(3, HIGH); // LED as visual indicator if value being sent
 
   // Get data from first MPU
   GetMpuValue(MPU1,
@@ -115,13 +128,13 @@ void loop() {
               GyXBuffer1, GyYBuffer1, GyZBuffer1,
               indexBuf1, bufferFilled1);
 
-  // Convertion
+  // Convert accel (LSB to g) then scale
   x = (AcX1 / 16384.0) * gain;
   y = (AcY1 / 16384.0) * gain;
   z = (AcZ1 / 16384.0) * gain;
   delay(10);
 
-  //get values for second mpu having address of 0x69
+  // Get data from second MPU (0x69)
   GetMpuValue(MPU2,
               AcX2, AcY2, AcZ2,
               GyX2, GyY2, GyZ2,
@@ -134,80 +147,84 @@ void loop() {
   z2 = (AcZ2 / 16384.0) * gain;
   delay(10);
 
-
-  //Print out a value, based on the change of the XYZ co-ordinates of 1st or 2nd MPU
-
-  //Claw rotates left
-  if ( y > 12 && y < 20 ) {
+  
+  // ----- Motion Commands -----
+  // Claw rotates left
+  if (y > 8 && y < 25) {
     Serial.println("L");
     BT.println("L");
     delay(response_time);
   }
 
-  //Claw rotates  right
-  if (y < -9 && y > -20) {
+  // Claw rotates right
+  if (y < -12 && y > -20) {
     Serial.println("R");
     BT.println("R");
     delay(response_time);
   }
 
   // Wrist Up
-  if ( x > 12.5) {
+  if (x > 10) {
     Serial.println("G");
     BT.println("G");
     delay(response_time);
   }
 
-  // /Wrist Down
-  if ( x < -15.72) {
+  // Wrist Down
+  if (x < -12) {
     Serial.println("U");
     BT.println("U");
     delay(response_time);
   }
 
-  //  Shoulder up
-  if (x2 >9) {
+  // Shoulder up
+  if (x2 < -4 ) {
     Serial.print("C");
     BT.print("C");
     delay(response_time);
   }
 
   // Shoulder down 
-  if (x2 < -12) {
+  if (x2 > 10) {
     Serial.print("c");
     BT.print("c");
     delay(response_time);
   }
 
-  // read the values from Flex Sensors to Arduino
-  pinkie = analogRead(pinkie_Data);
-  finger = analogRead(finger_Data);
-  thumb = analogRead(thumb_Data);
+  
 
-  //Calibrate to find upper and lower limit of the Flex Sensor
-  if (bool_caliberate == false ) {
+  // ----- Flex Sensors (smoothed to 10-sample moving average) -----
+  int thumbRaw  = analogRead(thumb_Data);
+  int fingerRaw = analogRead(finger_Data);
+  int pinkieRaw = analogRead(pinkie_Data);
+
+  // Smooth and overwrite live vars
+  thumb  = updateMovingAverage(thumbRaw,  thumbBuf,  thumbSum,  thumbIdx,  thumbFull,  FLEX_WINDOW);
+  finger = updateMovingAverage(fingerRaw, fingerBuf, fingerSum, fingerIdx, fingerFull, FLEX_WINDOW);
+  pinkie = updateMovingAverage(pinkieRaw, pinkieBuf, pinkieSum, pinkieIdx, pinkieFull, FLEX_WINDOW);
+
+  // ----- Optional: Calibrate using the averaged readings -----
+  if (bool_caliberate == false) {
     delay(1000);
 
-    thumb_high = (thumb * 1.15);
-    thumb_low = (thumb * 0.9);
+    thumb_high  = (thumb  * 1.15);
+    thumb_low   = (thumb  * 0.90);
 
     finger_high = (finger * 1.03);
-    finger_low = (finger * 0.8);
+    finger_low  = (finger * 0.80);
 
     pinkie_high = (pinkie * 1.06);
-    pinkie_low = (pinkie * 0.8);
+    pinkie_low  = (pinkie * 0.80);
 
     bool_caliberate = true;
   }
 
-  delay(response_time);
-
+  // ----- Threshold-based commands using averaged values -----
   // Pinkie
   if (pinkie >= pinkie_high) {
     Serial.print("P");
     BT.print("P");
     delay(response_time);
-
   }
   if (pinkie <= pinkie_low ) {
     Serial.print("p");
@@ -215,38 +232,38 @@ void loop() {
     delay(response_time);
   }
 
-
-  // thumb 1 - thumb (Base Rotation)
+  // Thumb (Base Rotation)
   if (thumb >= thumb_high) {
-    Serial.print("T");
-    BT.print("T");
+    Serial.print("S");
+    BT.print("S");
     delay(response_time);
   }
-
   if (thumb <= thumb_low) {
-    Serial.print("t");
-    BT.print("t");
+    Serial.print("O");
+    BT.print("O");
     delay(response_time);
   }
 
-  // finger 1 - Claw Bend/Open
+  // Finger (Claw Bend/Open)
   if (finger >= finger_high) {
     Serial.print("F");
     BT.print("F");
     delay(response_time);
   }
-
   if (finger <= finger_low) {
     Serial.print("f");
     BT.print("f");
     delay(response_time);
-  }
-  else {
+  } else {
     delay(5);
   }
+  
 }
 
-// Function: Read and smooth accel + gyro values and take averages
+
+// -------- Functions --------
+
+// Read and smooth accel + gyro values and take averages
 void GetMpuValue(
   const int MPU,
   float &AcX, float &AcY, float &AcZ,
@@ -274,9 +291,9 @@ void GetMpuValue(
   int16_t rawGZ = Wire.read() << 8 | Wire.read();
 
   // Store in circular buffers 
-  bufX[idx] = rawX;
-  bufY[idx] = rawY;
-  bufZ[idx] = rawZ;
+  bufX[idx]  = rawX;
+  bufY[idx]  = rawY;
+  bufZ[idx]  = rawZ;
 
   gBufX[idx] = rawGX;
   gBufY[idx] = rawGY;
@@ -292,21 +309,45 @@ void GetMpuValue(
   long sumX = 0, sumY = 0, sumZ = 0;
   long sumGX = 0, sumGY = 0, sumGZ = 0;
   int count = filled ? SMOOTH_WINDOW : idx;
+  if (count == 0) count = 1;
+
   for (int i = 0; i < count; i++) {
-    sumX += bufX[i];
-    sumY += bufY[i];
-    sumZ += bufZ[i];
+    sumX  += bufX[i];
+    sumY  += bufY[i];
+    sumZ  += bufZ[i];
 
     sumGX += gBufX[i];
     sumGY += gBufY[i];
     sumGZ += gBufZ[i];
   }
 
-  AcX = (float)sumX / count;
-  AcY = (float)sumY / count;
-  AcZ = (float)sumZ / count;
+  AcX = (float)sumX  / count;
+  AcY = (float)sumY  / count;
+  AcZ = (float)sumZ  / count;
 
   GyX = (float)sumGX / count;
   GyY = (float)sumGY / count;
   GyZ = (float)sumGZ / count;
+}
+
+// Update circular buffer + running sum; return current moving average
+int updateMovingAverage(int newVal,
+                        int *buf, long &sum,
+                        int &idx, bool &filled,
+                        const int WIN) {
+  if (filled) {
+    sum -= buf[idx];          // remove oldest
+  }
+  buf[idx] = newVal;          // add newest
+  sum += newVal;
+
+  idx++;
+  if (idx >= WIN) {           // wrap and mark filled after first full pass
+    idx = 0;
+    filled = true;
+  }
+
+  int count = filled ? WIN : idx;  // how many valid samples we have
+  if (count == 0) count = 1;       // safety
+  return (int)(sum / count);
 }
