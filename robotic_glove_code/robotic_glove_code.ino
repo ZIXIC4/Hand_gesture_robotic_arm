@@ -14,10 +14,10 @@ int thumb_Data  = A3;
 
 // MPU1 -> Palm movement； MPU2 -> Upper arm movement
 const int MPU2 = 0x69, MPU1 = 0x68;
-const int SMOOTH_WINDOW = 10;  // average of last 10 samples
+const int SMOOTH_WINDOW = 5;  // average of last 10 samples
 
 // === Flex sensor smoothing ===
-const int FLEX_WINDOW = 10;
+const int FLEX_WINDOW = 3;
 
 int  thumbBuf[FLEX_WINDOW]  = {0};
 int  fingerBuf[FLEX_WINDOW] = {0};
@@ -61,12 +61,12 @@ double x2, y2, z2;
   For Debug Mode. Check the upper and lower limit of the flex sensors
   3 Flex sensors used. Thumb, Middle, Pinkie
 */
-int thumb_high  = 885;
-int thumb_low   = 825;
-int finger_high = 900;
-int finger_low  = 820;
-int pinkie_high = 920;
-int pinkie_low  = 880;
+int thumb_high  = 915;
+int thumb_low   = 852;
+int finger_high = 915;
+int finger_low  = 840;
+int pinkie_high = 950;
+int pinkie_low  = 900;
 
 // Stop Calibrating the Flex Sensor when complete
 bool bool_caliberate = true;
@@ -106,8 +106,8 @@ void setup() {
   Wire.write(0);
   Wire.endTransmission(true);
 
-  Serial.begin(4800);
-  BT.begin(4800);    
+  Serial.begin(9600);
+  BT.begin(9600);    
   delay(1000);
 }
 
@@ -171,7 +171,7 @@ void loop() {
   }
 
   // Wrist Down
-  if (x < -12) {
+  if (x < -10) {
     Serial.println("U");
     BT.println("U");
     delay(response_time);

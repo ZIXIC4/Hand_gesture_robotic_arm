@@ -1,6 +1,4 @@
 #include <HCPCA9685.h>
-
-
 #include <SoftwareSerial.h>
 
 #define I2CAdd 0x40
@@ -39,10 +37,10 @@ int servo_joint_L_min_pos = 10;
 int servo_joint_L_max_pos = 180;
 int servo_joint_R_min_pos = 10;
 int servo_joint_R_max_pos = 180;
-int servo_joint_1_min_pos = 10;
+int servo_joint_1_min_pos = 180;
 int servo_joint_1_max_pos = 400;
-int servo_joint_2_min_pos = 10;
-int servo_joint_2_max_pos = 380;
+int servo_joint_2_min_pos = 197;
+int servo_joint_2_max_pos = 440;
 int servo_joint_3_min_pos = 10;
 int servo_joint_3_max_pos = 380;
 int servo_joint_4_min_pos = 10;
@@ -76,25 +74,59 @@ int stepDelay = 3000;
 const int stepsPerRevolutionSmall = 60;
 int stepDelaySmall = 9500;
 
+const int ButtonPin = 7;
+bool resetState = false;
+bool buttonWasPressed = false;   // edge detection flag
+
+
 unsigned int Pos;
 
 void setup() {
   pinMode(stepPin, OUTPUT);
   pinMode(dirPin, OUTPUT);
   pinMode(Enable, OUTPUT);
+  pinMode(ButtonPin, INPUT_PULLUP);  // internal pull-up
+  Serial.begin(9600);
+  Bluetooth.begin(9600);
 
+  Serial.println("=== System Powering Up ===");
+
+  //   Initialize PCA9685
   HCPCA9685.Init(SERVO_MODE);
   HCPCA9685.Sleep(false);
 
-  Serial.begin(9600);
-  Bluetooth.begin(9600);
-  Serial.println("=== Bluetooth <-> Serial Bridge Ready ===");
-  delay(2000);
+  // Wait for power rails to stabilize
+  delay(800);  // gives PCA9685 + servos time to get stable voltage
 
+
+  //  Now go to default positions smoothly
   wakeUp();
+
+  delay(100);
+  buttonWasPressed = false;
 }
 
 void loop() {
+  int buttonState = digitalRead(ButtonPin);
+  static unsigned long lastDebounceTime = 0;
+  const unsigned long debounceDelay = 50; // 50ms debounce
+
+  // Detect a press (LOW) only once per press
+  if (buttonState == LOW && !buttonWasPressed && (millis() - lastDebounceTime > debounceDelay)) {
+    buttonWasPressed = true;
+    lastDebounceTime = millis();
+
+    Serial.println("Button pressed → Moving arm to home position");
+    wakeUp();  //  trigger reset sequence once
+  }
+
+  // Reset flag when button released
+  if (buttonState == HIGH && buttonWasPressed && (millis() - lastDebounceTime > debounceDelay)) {
+    buttonWasPressed = false;
+    lastDebounceTime = millis();
+  }
+
+  // Handle Bluetooth or Serial commands
   if (Bluetooth.available() > 0 || Serial.available() > 0) {
     if (Bluetooth.available() > 0)
       state = Bluetooth.read();
@@ -117,10 +149,13 @@ void loop() {
       case 'L': wristServoCCW(); break;
       case 'F': gripperServoBackward(); break;
       case 'f': gripperServoForward(); break;
+      case 'D': demoSequence(); break;
+      case 'X': wakeUp(); break;
       default: break;
     }
   }
 }
+
 
 /* === UPDATED SERVO FUNCTIONS (Immediate Increment) === */
 
@@ -266,24 +301,124 @@ void baseRotateRight() {
 }
 
 void wakeUp() {
-  Serial.println("Moving to default positions...");
+  int targets[6] = {
+    servo_joint_L_parking_pos,
+    servo_joint_R_parking_pos,
+    servo_joint_1_parking_pos, // shoulder
+    servo_joint_2_parking_pos, // wrist 1
+    servo_joint_3_parking_pos, // wrist rotate
+    servo_joint_4_parking_pos
+  };  // gripper
+  
 
-  // Use the existing parking position constants directly
-  HCPCA9685.Servo(0, servo_joint_L_parking_pos);
-  HCPCA9685.Servo(1, servo_joint_R_parking_pos);
-  HCPCA9685.Servo(2, servo_joint_1_parking_pos);
-  HCPCA9685.Servo(3, servo_joint_2_parking_pos);
-  HCPCA9685.Servo(4, servo_joint_3_parking_pos);
-  HCPCA9685.Servo(5, servo_joint_4_parking_pos);
+  int current[6] = {
+    servo_joint_L_parking_pos_i,
+    servo_joint_R_parking_pos_i,
+    servo_joint_1_parking_pos_i,
+    servo_joint_2_parking_pos_i,
+    servo_joint_3_parking_pos_i,
+    servo_joint_4_parking_pos_i
+  };
 
-  // Reset the “_i” tracking variables to match
-  servo_joint_L_parking_pos_i = servo_joint_L_parking_pos;
-  servo_joint_R_parking_pos_i = servo_joint_R_parking_pos;
-  servo_joint_1_parking_pos_i = servo_joint_1_parking_pos;
-  servo_joint_2_parking_pos_i = servo_joint_2_parking_pos;
-  servo_joint_3_parking_pos_i = servo_joint_3_parking_pos;
-  servo_joint_4_parking_pos_i = servo_joint_4_parking_pos;
+  const int steps = 60;       // interpolation steps (higher = smoother)
+  const int stepDelayMs = 5; // delay between steps
 
-  Serial.println("Wake-up complete — servos at parking positions.");
+
+  int startElbow  = clampi(current[1] - R_TRIM, ELBOW_MIN, ELBOW_MAX);
+  int targetElbow = clampi(targets[1] - R_TRIM, ELBOW_MIN, ELBOW_MAX);
+
+  for (int s = 0; s <= steps; s++) {
+    int e = map(s, 0, steps, startElbow, targetElbow);
+
+    // Apply mirrored motion
+    int left  = clampi((ELBOW_MAX - e) + L_TRIM, servo_joint_L_min_pos, servo_joint_L_max_pos);
+    int right = clampi(e + R_TRIM, servo_joint_R_min_pos, servo_joint_R_max_pos);
+
+    HCPCA9685.Servo(0, left);
+    HCPCA9685.Servo(1, right);
+    delay(stepDelayMs);
+  }
+
+  // Update tracking
+  elbow = targetElbow;
+  servo_joint_L_parking_pos_i = clampi((ELBOW_MAX - elbow) + L_TRIM, servo_joint_L_min_pos, servo_joint_L_max_pos);
+  servo_joint_R_parking_pos_i = clampi(elbow + R_TRIM, servo_joint_R_min_pos, servo_joint_R_max_pos);
+
+  // === STEP 3: Move shoulder ===
+  for (int s = 0; s <= steps; s++) {
+    int pos = map(s, 0, steps, current[2], targets[2]);
+    HCPCA9685.Servo(2, pos);
+    delay(stepDelayMs);
+  }
+  servo_joint_1_parking_pos_i = targets[2];
+
+  // === STEP 4: Move wrist 1 ===
+  for (int s = 0; s <= steps; s++) {
+    int pos = map(s, 0, steps, current[3], targets[3]);
+    HCPCA9685.Servo(3, pos);
+    delay(stepDelayMs);
+  }
+  servo_joint_2_parking_pos_i = targets[3];
+
+  // === STEP 5: Move wrist rotate ===
+  for (int s = 0; s <= steps; s++) {
+    int pos = map(s, 0, steps, current[4], targets[4]);
+    HCPCA9685.Servo(4, pos);
+    delay(stepDelayMs);
+  }
+  servo_joint_3_parking_pos_i = targets[4];
+
+  // === STEP 6: Move gripper ===
+  for (int s = 0; s <= steps; s++) {
+    int pos = map(s, 0, steps, current[5], targets[5]);
+    HCPCA9685.Servo(5, pos);
+    delay(stepDelayMs);
+  }
+  servo_joint_4_parking_pos_i = targets[5];
+}
+void demoSequence() {
+  // Step 1 — Start from neutral position
+  wakeUp();
+  delay(500);
+
+  // Step 2 — Base rotation left & right
+  Serial.println("→ Rotating base...");
+  baseRotateLeft();
+  delay(300);
+  baseRotateRight();
+  delay(500);
+
+  // Step 3 — Move elbow down and up
+  Serial.println("→ Moving elbow...");
+  elbowServoForward();
+  delay(300);
+  elbowServoBackward();
+  delay(400);
+
+  // Step 4 — Shoulder down then up
+  Serial.println("→ Moving shoulder...");
+  for (int i = 0; i < 3; i++) shoulderServoForward();
+  delay(300);
+  for (int i = 0; i < 3; i++) shoulderServoBackward();
+  delay(400);
+
+  // Step 5 — Wrist rotation
+  Serial.println("→ Rotating wrist...");
+  for (int i = 0; i < 4; i++) wristServoCW();
+  delay(300);
+  for (int i = 0; i < 4; i++) wristServoCCW();
+  delay(400);
+
+  // Step 6 — Gripper open/close
+  Serial.println("→ Opening and closing gripper...");
+  for (int i = 0; i < 2; i++) gripperServoBackward(); // close
+  delay(500);
+  for (int i = 0; i < 2; i++) gripperServoForward(); // open
+  delay(500);
+
+  // Step 7 — Return home
+  Serial.println("→ Returning to home position...");
+  wakeUp();
+  Serial.println(" Demo sequence complete!");
 }
 
