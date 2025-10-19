@@ -141,7 +141,7 @@ void readSensorData() {
   // Read flex sensors
   thumb = analogRead(thumb_Data);
   finger = analogRead(finger_Data);
-  pinkie = analogRead(pinkie_Data);
+  //pinkie = analogRead(pinkie_Data);
 }
 
 void transmitLiveData() {
@@ -151,7 +151,7 @@ void transmitLiveData() {
                      String(arm_x, 2) + "," + 
                      String(thumb) + "," + 
                      String(finger) + "," + 
-                     String(pinkie);
+                     "0";
   
   // Send via Bluetooth
   BT.println(dataPacket);

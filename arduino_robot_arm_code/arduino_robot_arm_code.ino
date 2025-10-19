@@ -69,14 +69,14 @@ int action_delay = 600;
 const int dirPin = 4;
 const int stepPin = 5;
 const int Enable = 9;
-const int stepsPerRevolution = 40;
-int stepDelay = 3000;
+const int stepsPerRevolution = 80;
+int stepDelay = 1500;
 const int stepsPerRevolutionSmall = 60;
 int stepDelaySmall = 9500;
 
-const int ButtonPin = 7;
-bool resetState = false;
-bool buttonWasPressed = false;   // edge detection flag
+const int ButtonPin = 8;
+bool OperatingState = true;
+bool lastButtonState = HIGH;   // edge detection flag
 
 
 unsigned int Pos;
@@ -103,59 +103,63 @@ void setup() {
   wakeUp();
 
   delay(100);
-  buttonWasPressed = false;
 }
+
 
 void loop() {
-  int buttonState = digitalRead(ButtonPin);
-  static unsigned long lastDebounceTime = 0;
-  const unsigned long debounceDelay = 50; // 50ms debounce
+  bool currentButtonState = digitalRead(ButtonPin);
 
-  // Detect a press (LOW) only once per press
-  if (buttonState == LOW && !buttonWasPressed && (millis() - lastDebounceTime > debounceDelay)) {
-    buttonWasPressed = true;
-    lastDebounceTime = millis();
+  if (lastButtonState == HIGH && currentButtonState == LOW) {
+    OperatingState = !OperatingState;
+    Serial.print("Operating State: ");
+    Serial.println(OperatingState ? "ON" : "OFF");
 
-    Serial.println("Button pressed → Moving arm to home position");
-    wakeUp();  //  trigger reset sequence once
+    if (!OperatingState) {
+      // When turning OFF: move to neutral, but still flush buffer (optional)
+      wakeUp();
+    } else {
+      // When turning ON: flush all old commands from Bluetooth and Serial
+      while (Bluetooth.available()) Bluetooth.read();
+      while (Serial.available()) Serial.read();
+    }
+
+    delay(200); // debounce
   }
 
-  // Reset flag when button released
-  if (buttonState == HIGH && buttonWasPressed && (millis() - lastDebounceTime > debounceDelay)) {
-    buttonWasPressed = false;
-    lastDebounceTime = millis();
-  }
+  lastButtonState = currentButtonState;
 
-  // Handle Bluetooth or Serial commands
-  if (Bluetooth.available() > 0 || Serial.available() > 0) {
-    if (Bluetooth.available() > 0)
-      state = Bluetooth.read();
-    else if (Serial.available() > 0)
-      state = Serial.read();
+  // Only process commands if ON
+  if (OperatingState) {
+    if (Bluetooth.available() > 0 || Serial.available() > 0) {
+      if (Bluetooth.available() > 0)
+        state = Bluetooth.read();
+      else
+        state = Serial.read();
 
-    Serial.print("Command: ");
-    Serial.println(state);
+      Serial.print("Command: ");
+      Serial.println(state);
 
-    switch (state) {
-      case 'S': baseRotateLeft(); break;
-      case 'O': baseRotateRight(); break;
-      case 'c': shoulderServoForward(); break;
-      case 'C': shoulderServoBackward(); break;
-      case 'p': elbowServoForward(); break;
-      case 'P': elbowServoBackward(); break;
-      case 'U': wristServo1Backward(); break;
-      case 'G': wristServo1Forward(); break;
-      case 'R': wristServoCW(); break;
-      case 'L': wristServoCCW(); break;
-      case 'F': gripperServoBackward(); break;
-      case 'f': gripperServoForward(); break;
-      case 'D': demoSequence(); break;
-      case 'X': wakeUp(); break;
-      default: break;
+      switch (state) {
+        case 'S': baseRotateLeft(); break;
+        case 'O': baseRotateRight(); break;
+        case 'c': shoulderServoForward(); break;
+        case 'C': shoulderServoBackward(); break;
+        case 'p': elbowServoForward(); break;
+        case 'P': elbowServoBackward(); break;
+        case 'U': wristServo1Backward(); break;
+        case 'G': wristServo1Forward(); break;
+        case 'R': wristServoCW(); break;
+        case 'L': wristServoCCW(); break;
+        case 'F': gripperServoBackward(); break;
+        case 'f': gripperServoForward(); break;
+        case 'D': demoSequence(); break;
+        case 'X': wakeUp(); break;
+      }
     }
   }
-}
 
+  delay(20);
+}
 
 /* === UPDATED SERVO FUNCTIONS (Immediate Increment) === */
 
@@ -283,7 +287,7 @@ void baseRotateLeft() {
     digitalWrite(stepPin, LOW);
     delayMicroseconds(stepDelay);
   }
-  digitalWrite(Enable, HIGH);
+  // digitalWrite(Enable, HIGH);
   delay(response_time);
 }
 
@@ -296,7 +300,7 @@ void baseRotateRight() {
     digitalWrite(stepPin, LOW);
     delayMicroseconds(stepDelay);
   }
-  digitalWrite(Enable, HIGH);
+  // digitalWrite(Enable, HIGH);
   delay(response_time);
 }
 
@@ -377,48 +381,35 @@ void wakeUp() {
   servo_joint_4_parking_pos_i = targets[5];
 }
 void demoSequence() {
-  // Step 1 — Start from neutral position
+
   wakeUp();
   delay(500);
 
-  // Step 2 — Base rotation left & right
-  Serial.println("→ Rotating base...");
   baseRotateLeft();
   delay(300);
   baseRotateRight();
   delay(500);
 
-  // Step 3 — Move elbow down and up
-  Serial.println("→ Moving elbow...");
   elbowServoForward();
   delay(300);
   elbowServoBackward();
   delay(400);
 
-  // Step 4 — Shoulder down then up
-  Serial.println("→ Moving shoulder...");
   for (int i = 0; i < 3; i++) shoulderServoForward();
   delay(300);
   for (int i = 0; i < 3; i++) shoulderServoBackward();
   delay(400);
 
-  // Step 5 — Wrist rotation
-  Serial.println("→ Rotating wrist...");
   for (int i = 0; i < 4; i++) wristServoCW();
   delay(300);
   for (int i = 0; i < 4; i++) wristServoCCW();
   delay(400);
 
-  // Step 6 — Gripper open/close
-  Serial.println("→ Opening and closing gripper...");
-  for (int i = 0; i < 2; i++) gripperServoBackward(); // close
+  for (int i = 0; i < 2; i++) gripperServoBackward(); 
   delay(500);
-  for (int i = 0; i < 2; i++) gripperServoForward(); // open
+  for (int i = 0; i < 2; i++) gripperServoForward(); 
   delay(500);
 
-  // Step 7 — Return home
-  Serial.println("→ Returning to home position...");
   wakeUp();
-  Serial.println(" Demo sequence complete!");
 }
 

@@ -26,7 +26,7 @@ const int SHOULDER_CENTER = 235;
 
 const int ELBOW_MIN = 10;
 const int ELBOW_MAX = 180;
-const int ELBOW_CENTER = 95;
+const int ELBOW_CENTER = 10;
 
 const int WRIST1_MIN = 10;
 const int WRIST1_MAX = 380;
@@ -176,7 +176,7 @@ void processLiveMappingData(String data) {
     // Debug output
     Serial.print("Mapped - Shoulder: ");
     Serial.print(targetShoulderPos);
-    Serial.print(", Elbow: ");
+    Serial.print(", Elbow (Locked): ");
     Serial.print(targetElbowPos);
     Serial.print(", Wrist1: ");
     Serial.print(targetWrist1Pos);
@@ -200,9 +200,9 @@ void mapHandToServos(float imu1_x, float imu1_y, float imu2_x, int thumb_flex, i
   targetWristRotatePos = mapFloat(imu1_y, IMU1_Y_MIN, IMU1_Y_MAX, WRIST_ROTATE_MIN, WRIST_ROTATE_MAX);
   targetWristRotatePos = constrain(targetWristRotatePos, WRIST_ROTATE_MIN, WRIST_ROTATE_MAX);
   
-  // Map pinkie flex sensor to elbow servo (assuming pinkie controls elbow bend)
-  targetElbowPos = mapFloat(pinkie_flex, PINKIE_FLEX_MIN, PINKIE_FLEX_MAX, ELBOW_MIN, ELBOW_MAX);
-  targetElbowPos = constrain(targetElbowPos, ELBOW_MIN, ELBOW_MAX);
+  // Elbow joint disabled — keep fixed at 10° (ELBOW_MIN)
+  targetElbowPos = ELBOW_MIN;
+
   
   // Map finger flex sensor to gripper (finger controls grip strength)
   targetGripperPos = mapFloat(finger_flex, FINGER_FLEX_MIN, FINGER_FLEX_MAX, GRIPPER_MAX, GRIPPER_MIN); // Inverted
