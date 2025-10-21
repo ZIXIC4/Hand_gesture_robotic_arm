@@ -14,7 +14,7 @@ int thumb_Data  = A3;
 
 // MPU1 -> Palm movement； MPU2 -> Upper arm movement
 const int MPU2 = 0x69, MPU1 = 0x68;
-const int SMOOTH_WINDOW = 5;  // average of last 10 samples
+const int SMOOTH_WINDOW = 3;  // average of last 10 samples
 
 // === Flex sensor smoothing ===
 const int FLEX_WINDOW = 3;
@@ -66,7 +66,7 @@ int thumb_low   = 852;
 int finger_high = 915;
 int finger_low  = 840;
 int pinkie_high = 950;
-int pinkie_low  = 900;
+int pinkie_low  = 890;
 
 // Stop Calibrating the Flex Sensor when complete
 bool bool_caliberate = true;
